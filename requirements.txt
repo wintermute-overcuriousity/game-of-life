@@ -1,0 +1,5 @@
+# Dependencies for Conway's Game of Life
+# Install with: pip install -r requirements.txt
+
+numpy>=1.20.0
+pygame>=2.0.0
