@@ -267,14 +267,14 @@ class TestPatterns(unittest.TestCase):
         dh = GameOfLife.diehard()
         self.assertEqual(len(dh), 3)
         cells = sum(sum(row) for row in dh)
-        self.assertEqual(cells, 6)
+        self.assertEqual(cells, 7)
     
     def test_acorn(self):
         """Test Acorn pattern."""
         ac = GameOfLife.acorn()
         self.assertEqual(len(ac), 3)
         cells = sum(sum(row) for row in ac)
-        self.assertEqual(cells, 6)
+        self.assertEqual(cells, 7)
     
     def test_hwss(self):
         """Test Heavy Weight Spaceship."""
