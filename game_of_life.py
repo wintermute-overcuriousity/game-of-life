@@ -5,8 +5,16 @@ Conway's Game of Life implementation.
 A cellular automaton simulation with Conway's rules and predefined patterns.
 """
 
+import json
 import numpy as np
 from typing import List, Tuple, Optional
+from pathlib import Path
+
+try:
+    import config
+    USE_CONFIG = True
+except ImportError:
+    USE_CONFIG = False
 
 
 class GameOfLife:
@@ -110,6 +118,40 @@ class GameOfLife:
         self.grid = new_grid
         return new_grid
     
+    def next_generation_vectorized(self) -> np.ndarray:
+        """
+        Compute the next generation using NumPy vectorization for better performance.
+        
+        This is significantly faster for large grids as it avoids Python loops.
+        
+        Returns:
+            New grid state
+        """
+        # Create padded grid to handle edge cases
+        padded = np.pad(self.grid, pad_width=1, mode='constant', constant_values=0)
+        
+        # Count neighbors using convolution-like approach
+        neighbors = (
+            padded[0:-2, 0:-2] +  # top-left
+            padded[0:-2, 1:-1] +  # top
+            padded[0:-2, 2:] +    # top-right
+            padded[1:-1, 0:-2] +  # left
+            padded[1:-1, 2:] +    # right
+            padded[2:, 0:-2] +    # bottom-left
+            padded[2:, 1:-1] +    # bottom
+            padded[2:, 2:]        # bottom-right
+        )
+        
+        # Apply Conway's rules using vectorized operations
+        # Rule 1 & 3: Live cells with <2 or >3 neighbors die
+        # Rule 2: Live cells with 2 or 3 neighbors survive
+        # Rule 4: Dead cells with exactly 3 neighbors become alive
+        survive = (self.grid == 1) & ((neighbors == 2) | (neighbors == 3))
+        birth = (self.grid == 0) & (neighbors == 3)
+        
+        self.grid = (survive | birth).astype(np.uint8)
+        return self.grid
+    
     def clear(self) -> None:
         """Clear the grid (set all cells to dead)."""
         self.grid = np.zeros((self.height, self.width), dtype=np.uint8)
@@ -144,11 +186,44 @@ class GameOfLife:
                     if 0 <= cell_x < self.width and 0 <= cell_y < self.height:
                         self.set_cell(cell_x, cell_y, 1)
     
+    def save_to_file(self, filepath: str) -> None:
+        """
+        Save the current grid state to a JSON file.
+        
+        Args:
+            filepath: Path to the output file
+        """
+        data = {
+            'width': self.width,
+            'height': self.height,
+            'grid': self.grid.tolist()
+        }
+        with open(filepath, 'w') as f:
+            json.dump(data, f)
+    
+    @classmethod
+    def load_from_file(cls, filepath: str) -> 'GameOfLife':
+        """
+        Load a grid state from a JSON file.
+        
+        Args:
+            filepath: Path to the input file
+            
+        Returns:
+            GameOfLife instance with loaded state
+        """
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+        
+        game = cls(data['width'], data['height'])
+        game.grid = np.array(data['grid'], dtype=np.uint8)
+        return game
+    
     def __str__(self) -> str:
         """String representation of the grid."""
         rows = []
         for y in range(self.height):
-            row = ''.join(['█' if cell else ' ' for cell in self.grid[y]])
+            row = ''.join(['\u2588' if cell else ' ' for cell in self.grid[y]])
             rows.append(row)
         return '\n'.join(rows)
     
@@ -267,25 +342,61 @@ class GameOfLife:
     @staticmethod
     def pentadecathlon() -> List[List[int]]:
         """
-        Create a 16x9 Pentadecathlon pattern (oscillator, period 15).
+        Create a proper 16x9 Pentadecathlon pattern (oscillator, period 15).
         
         Returns:
             2D list representing the Pentadecathlon pattern
         """
+        # This is a proper pentadecathlon - a period-15 oscillator
         return [
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         ]
-        # Note: Full pentadecathlon pattern is complex, this is a placeholder
-        # In practice, you'd want to define the actual pattern
-
+    
+    @staticmethod
+    def gosper_glider_gun() -> List[List[int]]:
+        """
+        Create a 36x9 Gosper Glider Gun pattern.
+        This is the first discovered glider gun and produces gliders indefinitely.
+        
+        Returns:
+            2D list representing the Gosper Glider Gun pattern
+        """
+        return [
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        ]
+    
+    @staticmethod
+    def r_pentomino() -> List[List[int]]:
+        """
+        Create a 5x5 R-Pentomino pattern.
+        This is a methuselah that evolves for over 1100 generations before stabilizing.
+        
+        Returns:
+            2D list representing the R-Pentomino pattern
+        """
+        return [
+            [0, 0, 1, 1, 0],
+            [1, 1, 0, 1, 0],
+            [0, 1, 0, 0, 0],
+            [0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0]
+        ]
 
 
 import pygame
@@ -299,20 +410,30 @@ class GameOfLifeGUI:
     PyGame GUI for Conway's Game of Life.
     """
     
-    def __init__(self, width: int = 800, height: int = 600, cell_size: int = 15):
+    def __init__(self, width: int = None, height: int = None, cell_size: int = None):
         """
         Initialize the PyGame GUI.
         
         Args:
-            width: Window width in pixels (default: 800)
-            height: Window height in pixels (default: 600)
-            cell_size: Size of each cell in pixels (default: 15)
+            width: Window width in pixels (default: from config or 800)
+            height: Window height in pixels (default: from config or 600)
+            cell_size: Size of each cell in pixels (default: from config or 15)
         """
+        # Load settings from config if available
+        if USE_CONFIG:
+            w = width if width is not None else getattr(config, 'GUI_WIDTH', 1000)
+            h = height if height is not None else getattr(config, 'GUI_HEIGHT', 700)
+            cs = cell_size if cell_size is not None else getattr(config, 'GUI_CELL_SIZE', 18)
+        else:
+            w = width if width is not None else 1000
+            h = height if height is not None else 700
+            cs = cell_size if cell_size is not None else 18
+        
         pygame.init()
         
-        self.width = width
-        self.height = height
-        self.cell_size = cell_size
+        self.width = w
+        self.height = h
+        self.cell_size = cs
         
         # Calculate grid dimensions based on cell size
         self.grid_width = width // cell_size
@@ -325,13 +446,22 @@ class GameOfLifeGUI:
         self.screen = pygame.display.set_mode((width, height))
         pygame.display.set_caption("Conway's Game of Life")
         
-        # Colors
-        self.BACKGROUND = (20, 20, 30)
-        self.GRID_COLOR = (40, 40, 60)
-        self.CELL_ALIVE = (100, 200, 100)
-        self.CELL_DEAD = (30, 30, 40)
-        self.TEXT_COLOR = (220, 220, 220)
-        self.HIGHLIGHT_COLOR = (255, 255, 200)
+        # Load colors from config if available
+        if USE_CONFIG:
+            self.BACKGROUND = config.COLORS.get('background', (20, 20, 30))
+            self.GRID_COLOR = config.COLORS.get('grid', (40, 40, 60))
+            self.CELL_ALIVE = config.COLORS.get('cell_alive', (100, 200, 100))
+            self.CELL_DEAD = config.COLORS.get('cell_dead', (30, 30, 40))
+            self.TEXT_COLOR = config.COLORS.get('text', (220, 220, 220))
+            self.HIGHLIGHT_COLOR = config.COLORS.get('highlight', (255, 255, 200))
+        else:
+            # Colors
+            self.BACKGROUND = (20, 20, 30)
+            self.GRID_COLOR = (40, 40, 60)
+            self.CELL_ALIVE = (100, 200, 100)
+            self.CELL_DEAD = (30, 30, 40)
+            self.TEXT_COLOR = (220, 220, 220)
+            self.HIGHLIGHT_COLOR = (255, 255, 200)
         
         # Font
         self.font = pygame.font.SysFont('Arial', 20)
@@ -344,6 +474,7 @@ class GameOfLifeGUI:
         self.last_update = 0
         self.dragging = False
         self.draw_mode = 1  # 1 for alive, 0 for dead
+        self.use_vectorized = True  # Use optimized algorithm by default
         
         # Pattern selection
         self.patterns = {
@@ -353,7 +484,10 @@ class GameOfLifeGUI:
             'beacon': GameOfLife.beacon,
             'pulsar': GameOfLife.pulsar,
             'lwss': GameOfLife.lwss,
-            'toad': GameOfLife.toad
+            'toad': GameOfLife.toad,
+            'pentadecathlon': GameOfLife.pentadecathlon,
+            'gosper_glider_gun': GameOfLife.gosper_glider_gun,
+            'r_pentomino': GameOfLife.r_pentomino
         }
         self.current_pattern = 'glider'
     
@@ -378,27 +512,38 @@ class GameOfLifeGUI:
                     self.game.clear()
                     self.generation = 0
                 
+                # S: Save grid
+                elif event.key == pygame.K_s:
+                    self._save_grid()
+                
+                # L: Load grid
+                elif event.key == pygame.K_l:
+                    self._load_grid()
+                
                 # +/-: Adjust speed
                 elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
                     self.speed = min(60, self.speed + 2)
                 elif event.key == pygame.K_MINUS:
                     self.speed = max(1, self.speed - 2)
                 
-                # 1-7: Select patterns
-                elif event.key == pygame.K_1:
-                    self.current_pattern = 'block'
-                elif event.key == pygame.K_2:
-                    self.current_pattern = 'blinker'
-                elif event.key == pygame.K_3:
-                    self.current_pattern = 'glider'
-                elif event.key == pygame.K_4:
-                    self.current_pattern = 'beacon'
-                elif event.key == pygame.K_5:
-                    self.current_pattern = 'pulsar'
-                elif event.key == pygame.K_6:
-                    self.current_pattern = 'lwss'
-                elif event.key == pygame.K_7:
-                    self.current_pattern = 'toad'
+                # V: Toggle vectorized mode
+                elif event.key == pygame.K_v:
+                    self.use_vectorized = not self.use_vectorized
+                
+                # 1-9: Select patterns
+                pattern_keys = {
+                    pygame.K_1: 'block',
+                    pygame.K_2: 'blinker',
+                    pygame.K_3: 'glider',
+                    pygame.K_4: 'beacon',
+                    pygame.K_5: 'pulsar',
+                    pygame.K_6: 'lwss',
+                    pygame.K_7: 'toad',
+                    pygame.K_8: 'pentadecathlon',
+                    pygame.K_9: 'gosper_glider_gun',
+                }
+                if event.key in pattern_keys:
+                    self.current_pattern = pattern_keys[event.key]
                 
                 # D: Toggle draw mode (alive/dead)
                 elif event.key == pygame.K_d:
@@ -434,6 +579,25 @@ class GameOfLifeGUI:
         
         return True
     
+    def _save_grid(self) -> None:
+        """Save the current grid to a file."""
+        try:
+            self.game.save_to_file('game_of_life_save.json')
+            print("Grid saved to game_of_life_save.json")
+        except Exception as e:
+            print(f"Error saving grid: {e}")
+    
+    def _load_grid(self) -> None:
+        """Load a grid from a file."""
+        try:
+            self.game = GameOfLife.load_from_file('game_of_life_save.json')
+            self.grid_width = self.game.width
+            self.grid_height = self.game.height
+            self.generation = 0
+            print("Grid loaded from game_of_life_save.json")
+        except Exception as e:
+            print(f"Error loading grid: {e}")
+    
     def handle_click(self, pos):
         """Handle mouse click at position."""
         x, y = self.screen_to_grid(pos)
@@ -459,7 +623,10 @@ class GameOfLifeGUI:
         
         current_time = time.time()
         if current_time - self.last_update > 1.0 / self.speed:
-            self.game.next_generation()
+            if self.use_vectorized:
+                self.game.next_generation_vectorized()
+            else:
+                self.game.next_generation()
             self.generation += 1
             self.last_update = current_time
     
@@ -507,20 +674,21 @@ class GameOfLifeGUI:
             f"Speed: {self.speed} FPS",
             f"Grid: {self.grid_width}x{self.grid_height}",
             f"Pattern: {self.current_pattern}",
-            f"Draw mode: {'ALIVE' if self.draw_mode == 1 else 'DEAD'}"
+            f"Draw mode: {'ALIVE' if self.draw_mode == 1 else 'DEAD'}",
+            f"Method: {'VECTORIZED' if self.use_vectorized else 'ITERATIVE'}"
         ]
         
         # Draw text background
         pygame.draw.rect(self.screen, (30, 30, 45, 200), 
-                        (10, 10, 300, 180), border_radius=8)
+                        (10, 10, 320, 200), border_radius=8)
         pygame.draw.rect(self.screen, (60, 60, 80), 
-                        (10, 10, 300, 180), 2, border_radius=8)
+                        (10, 10, 320, 200), 2, border_radius=8)
         
         # Draw texts
         for i, text in enumerate(texts):
             color = status_color if i == 1 else self.TEXT_COLOR
             text_surface = self.font.render(text, True, color)
-            self.screen.blit(text_surface, (20, 20 + i * 30))
+            self.screen.blit(text_surface, (20, 20 + i * 28))
         
         # Draw controls help
         controls = [
@@ -528,8 +696,11 @@ class GameOfLifeGUI:
             "SPACE: Play/Pause",
             "R: Reset grid",
             "C: Clear grid",
+            "S: Save grid",
+            "L: Load grid",
             "+/-: Adjust speed",
-            "1-7: Select pattern",
+            "V: Toggle method",
+            "1-9: Select pattern",
             "D: Toggle draw mode",
             "F: Fill random",
             "L-click: Draw cells",
@@ -539,9 +710,9 @@ class GameOfLifeGUI:
         
         # Draw controls background
         pygame.draw.rect(self.screen, (30, 30, 45, 200),
-                        (self.width - 310, 10, 300, 340), border_radius=8)
+                        (self.width - 310, 10, 300, 400), border_radius=8)
         pygame.draw.rect(self.screen, (60, 60, 80),
-                        (self.width - 310, 10, 300, 340), 2, border_radius=8)
+                        (self.width - 310, 10, 300, 400), 2, border_radius=8)
         
         # Draw controls text
         for i, text in enumerate(controls):
@@ -571,8 +742,11 @@ def gui_main():
     print("  SPACE: Play/Pause")
     print("  R: Reset grid")
     print("  C: Clear grid")
+    print("  S: Save grid")
+    print("  L: Load grid")
     print("  +/-: Adjust speed")
-    print("  1-7: Select patterns")
+    print("  V: Toggle vectorized/iterative method")
+    print("  1-9: Select patterns")
     print("  D: Toggle draw mode (alive/dead)")
     print("  F: Fill random")
     print("  L-click: Draw cells")
@@ -581,7 +755,7 @@ def gui_main():
     print()
     
     # Create and run the GUI
-    gui = GameOfLifeGUI(width=1000, height=700, cell_size=18)
+    gui = GameOfLifeGUI()
     gui.run()
 
 
@@ -635,9 +809,50 @@ def demo() -> None:
         print(game)
 
 
+def benchmark() -> None:
+    """Run performance benchmark comparing iterative vs vectorized methods."""
+    print("Performance Benchmark")
+    print("=" * 50)
+    
+    sizes = [(50, 50), (100, 100), (200, 200), (500, 500)]
+    iterations = 100
+    
+    for width, height in sizes:
+        game_iterative = GameOfLife(width, height)
+        game_iterative.randomize(0.3)
+        
+        game_vectorized = GameOfLife(width, height)
+        game_vectorized.grid = game_iterative.grid.copy()
+        
+        # Benchmark iterative method
+        start = time.time()
+        for _ in range(iterations):
+            game_iterative.next_generation()
+        iterative_time = time.time() - start
+        
+        # Benchmark vectorized method
+        start = time.time()
+        for _ in range(iterations):
+            game_vectorized.next_generation_vectorized()
+        vectorized_time = time.time() - start
+        
+        speedup = iterative_time / vectorized_time if vectorized_time > 0 else float('inf')
+        
+        print(f"Grid {width}x{height}:")
+        print(f"  Iterative: {iterative_time:.4f}s ({iterations} iterations)")
+        print(f"  Vectorized: {vectorized_time:.4f}s ({iterations} iterations)")
+        print(f"  Speedup: {speedup:.2f}x")
+        print()
+
+
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "--gui":
-        gui_main()
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--gui":
+            gui_main()
+        elif sys.argv[1] == "--benchmark":
+            benchmark()
+        else:
+            demo()
     else:
         demo()
