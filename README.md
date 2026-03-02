@@ -30,12 +30,14 @@ Conway's Game of Life is a zero-player game that evolves based on its initial st
 - **Visual ASCII representation** using Unicode block characters
 - **Demo function** showcasing pattern interactions
 - **Extensible architecture** for adding custom patterns
+- **Pygame GUI** with interactive controls and visualization
 
 ## Installation
 
 ### Prerequisites
 - Python 3.6 or higher
 - NumPy library for efficient array operations
+- Pygame library for graphical interface
 
 ### Install Dependencies
 ```bash
@@ -45,7 +47,7 @@ pip install numpy pygame
 
 ### Clone the Repository
 ```bash
-git clone https://github.com/yourusername/game-of-life.git
+git clone https://github.com/wintermute-overcuriousity/game-of-life.git
 cd game-of-life
 ```
 
@@ -79,6 +81,19 @@ The demo will:
 2. Show 10 generations of evolution
 3. Clear the grid and demonstrate random initialization
 4. Show 5 generations of random pattern evolution
+
+### Running the GUI
+```bash
+python game_of_life.py --gui
+```
+
+The GUI provides:
+- Interactive grid editing with mouse
+- Real-time visualization
+- Play/Pause controls
+- Speed adjustment
+- Pattern selection and placement
+- Generation counter
 
 ### Available Patterns
 
@@ -142,6 +157,32 @@ neighbors = game.count_neighbors(x=5, y=5)
 next_grid = game.next_generation()
 ```
 
+## GUI Controls
+
+When running the GUI (`--gui` flag), you can use the following controls:
+
+### Keyboard Controls
+- **SPACE**: Play/Pause simulation
+- **R**: Reset grid (clear all cells)
+- **C**: Clear grid
+- **+/-**: Adjust simulation speed
+- **1-7**: Select different patterns:
+  - 1: Block (still life)
+  - 2: Blinker (oscillator)
+  - 3: Glider (spaceship)
+  - 4: Beacon (oscillator)
+  - 5: Pulsar (oscillator)
+  - 6: Lightweight Spaceship (LWSS)
+  - 7: Toad (oscillator)
+- **D**: Toggle draw mode (alive/dead)
+- **F**: Fill grid with random pattern
+- **ESC**: Quit application
+
+### Mouse Controls
+- **Left Click**: Draw cells (toggle based on draw mode)
+- **Right Click**: Place selected pattern at cursor position
+- **Click and Drag**: Continuous drawing
+
 ## Screenshot Placeholder
 
 ```
@@ -170,7 +211,7 @@ Generation 3:
 
 ```
 game-of-life/
-├── game_of_life.py    # Main implementation
+├── game_of_life.py    # Main implementation with GUI
 ├── README.md          # This documentation
 └── .git/              # Git repository
 ```
@@ -178,13 +219,16 @@ game-of-life/
 ## Dependencies
 
 - **NumPy**: For efficient array operations and grid management
-- **Pygame**: For graphical visualization (optional, for future GUI implementation)
+- **Pygame**: For graphical visualization (required for GUI mode)
 
 ## Running Tests
 
 ```bash
 # Run the built-in demo
 python game_of_life.py
+
+# Run the GUI
+python game_of_life.py --gui
 
 # Test specific patterns
 python -c "
@@ -213,11 +257,10 @@ This project is open source and available under the MIT License.
 - John Horton Conway for creating the Game of Life
 - The cellular automata community for pattern discovery
 - NumPy developers for the excellent array library
+- Pygame developers for the graphics library
 
 ## Future Enhancements
 
-- [ ] Pygame-based graphical interface
-- [ ] Interactive grid editing
 - [ ] Pattern library browser
 - [ ] Speed controls for generation progression
 - [ ] Save/Load grid states
