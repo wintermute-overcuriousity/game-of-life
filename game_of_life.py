@@ -287,6 +287,304 @@ class GameOfLife:
         # In practice, you'd want to define the actual pattern
 
 
+
+import pygame
+import sys
+from typing import Tuple, Optional
+import time
+
+
+class GameOfLifeGUI:
+    """
+    PyGame GUI for Conway's Game of Life.
+    """
+    
+    def __init__(self, width: int = 800, height: int = 600, cell_size: int = 15):
+        """
+        Initialize the PyGame GUI.
+        
+        Args:
+            width: Window width in pixels (default: 800)
+            height: Window height in pixels (default: 600)
+            cell_size: Size of each cell in pixels (default: 15)
+        """
+        pygame.init()
+        
+        self.width = width
+        self.height = height
+        self.cell_size = cell_size
+        
+        # Calculate grid dimensions based on cell size
+        self.grid_width = width // cell_size
+        self.grid_height = height // cell_size
+        
+        # Create the game instance
+        self.game = GameOfLife(self.grid_width, self.grid_height)
+        
+        # Create the screen
+        self.screen = pygame.display.set_mode((width, height))
+        pygame.display.set_caption("Conway's Game of Life")
+        
+        # Colors
+        self.BACKGROUND = (20, 20, 30)
+        self.GRID_COLOR = (40, 40, 60)
+        self.CELL_ALIVE = (100, 200, 100)
+        self.CELL_DEAD = (30, 30, 40)
+        self.TEXT_COLOR = (220, 220, 220)
+        self.HIGHLIGHT_COLOR = (255, 255, 200)
+        
+        # Font
+        self.font = pygame.font.SysFont('Arial', 20)
+        self.small_font = pygame.font.SysFont('Arial', 16)
+        
+        # Game state
+        self.running = False
+        self.generation = 0
+        self.speed = 10  # Updates per second
+        self.last_update = 0
+        self.dragging = False
+        self.draw_mode = 1  # 1 for alive, 0 for dead
+        
+        # Pattern selection
+        self.patterns = {
+            'block': GameOfLife.block,
+            'blinker': GameOfLife.blinker,
+            'glider': GameOfLife.glider,
+            'beacon': GameOfLife.beacon,
+            'pulsar': GameOfLife.pulsar,
+            'lwss': GameOfLife.lwss,
+            'toad': GameOfLife.toad
+        }
+        self.current_pattern = 'glider'
+    
+    def handle_events(self):
+        """Handle PyGame events."""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            
+            elif event.type == pygame.KEYDOWN:
+                # Space: Play/Pause
+                if event.key == pygame.K_SPACE:
+                    self.running = not self.running
+                
+                # R: Reset (clear grid)
+                elif event.key == pygame.K_r:
+                    self.game.clear()
+                    self.generation = 0
+                
+                # C: Clear grid
+                elif event.key == pygame.K_c:
+                    self.game.clear()
+                    self.generation = 0
+                
+                # +/-: Adjust speed
+                elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
+                    self.speed = min(60, self.speed + 2)
+                elif event.key == pygame.K_MINUS:
+                    self.speed = max(1, self.speed - 2)
+                
+                # 1-7: Select patterns
+                elif event.key == pygame.K_1:
+                    self.current_pattern = 'block'
+                elif event.key == pygame.K_2:
+                    self.current_pattern = 'blinker'
+                elif event.key == pygame.K_3:
+                    self.current_pattern = 'glider'
+                elif event.key == pygame.K_4:
+                    self.current_pattern = 'beacon'
+                elif event.key == pygame.K_5:
+                    self.current_pattern = 'pulsar'
+                elif event.key == pygame.K_6:
+                    self.current_pattern = 'lwss'
+                elif event.key == pygame.K_7:
+                    self.current_pattern = 'toad'
+                
+                # D: Toggle draw mode (alive/dead)
+                elif event.key == pygame.K_d:
+                    self.draw_mode = 1 if self.draw_mode == 0 else 0
+                
+                # F: Fill random
+                elif event.key == pygame.K_f:
+                    self.game.randomize(0.3)
+                    self.generation = 0
+                
+                # ESC: Quit
+                elif event.key == pygame.K_ESCAPE:
+                    return False
+            
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1:  # Left click
+                    self.dragging = True
+                    self.handle_click(event.pos)
+                elif event.button == 3:  # Right click
+                    # Place current pattern
+                    x, y = self.screen_to_grid(event.pos)
+                    pattern_func = self.patterns.get(self.current_pattern)
+                    if pattern_func:
+                        self.game.add_pattern(pattern_func(), x, y)
+            
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if event.button == 1:  # Left click
+                    self.dragging = False
+            
+            elif event.type == pygame.MOUSEMOTION:
+                if self.dragging:
+                    self.handle_click(event.pos)
+        
+        return True
+    
+    def handle_click(self, pos):
+        """Handle mouse click at position."""
+        x, y = self.screen_to_grid(pos)
+        if 0 <= x < self.grid_width and 0 <= y < self.grid_height:
+            current_state = self.game.get_cell(x, y)
+            # Toggle or set based on draw mode
+            if self.draw_mode == 1:
+                self.game.set_cell(x, y, 1)
+            else:
+                self.game.set_cell(x, y, 0)
+    
+    def screen_to_grid(self, pos):
+        """Convert screen coordinates to grid coordinates."""
+        x, y = pos
+        grid_x = x // self.cell_size
+        grid_y = y // self.cell_size
+        return grid_x, grid_y
+    
+    def update(self):
+        """Update game state if running."""
+        if not self.running:
+            return
+        
+        current_time = time.time()
+        if current_time - self.last_update > 1.0 / self.speed:
+            self.game.next_generation()
+            self.generation += 1
+            self.last_update = current_time
+    
+    def draw(self):
+        """Draw everything to the screen."""
+        # Clear screen
+        self.screen.fill(self.BACKGROUND)
+        
+        # Draw grid lines
+        for x in range(0, self.width, self.cell_size):
+            pygame.draw.line(self.screen, self.GRID_COLOR, 
+                           (x, 0), (x, self.height), 1)
+        for y in range(0, self.height, self.cell_size):
+            pygame.draw.line(self.screen, self.GRID_COLOR,
+                           (0, y), (self.width, y), 1)
+        
+        # Draw cells
+        for y in range(self.grid_height):
+            for x in range(self.grid_width):
+                if self.game.get_cell(x, y) == 1:
+                    rect = pygame.Rect(
+                        x * self.cell_size + 1,
+                        y * self.cell_size + 1,
+                        self.cell_size - 2,
+                        self.cell_size - 2
+                    )
+                    pygame.draw.rect(self.screen, self.CELL_ALIVE, rect)
+                    pygame.draw.rect(self.screen, self.HIGHLIGHT_COLOR, rect, 1)
+        
+        # Draw UI text
+        self.draw_ui()
+        
+        # Update display
+        pygame.display.flip()
+    
+    def draw_ui(self):
+        """Draw UI elements and text."""
+        # Status text
+        status = "RUNNING" if self.running else "PAUSED"
+        status_color = (100, 255, 100) if self.running else (255, 100, 100)
+        
+        texts = [
+            f"Generation: {self.generation}",
+            f"Status: {status}",
+            f"Speed: {self.speed} FPS",
+            f"Grid: {self.grid_width}x{self.grid_height}",
+            f"Pattern: {self.current_pattern}",
+            f"Draw mode: {'ALIVE' if self.draw_mode == 1 else 'DEAD'}"
+        ]
+        
+        # Draw text background
+        pygame.draw.rect(self.screen, (30, 30, 45, 200), 
+                        (10, 10, 300, 180), border_radius=8)
+        pygame.draw.rect(self.screen, (60, 60, 80), 
+                        (10, 10, 300, 180), 2, border_radius=8)
+        
+        # Draw texts
+        for i, text in enumerate(texts):
+            color = status_color if i == 1 else self.TEXT_COLOR
+            text_surface = self.font.render(text, True, color)
+            self.screen.blit(text_surface, (20, 20 + i * 30))
+        
+        # Draw controls help
+        controls = [
+            "CONTROLS:",
+            "SPACE: Play/Pause",
+            "R: Reset grid",
+            "C: Clear grid",
+            "+/-: Adjust speed",
+            "1-7: Select pattern",
+            "D: Toggle draw mode",
+            "F: Fill random",
+            "L-click: Draw cells",
+            "R-click: Place pattern",
+            "ESC: Quit"
+        ]
+        
+        # Draw controls background
+        pygame.draw.rect(self.screen, (30, 30, 45, 200),
+                        (self.width - 310, 10, 300, 340), border_radius=8)
+        pygame.draw.rect(self.screen, (60, 60, 80),
+                        (self.width - 310, 10, 300, 340), 2, border_radius=8)
+        
+        # Draw controls text
+        for i, text in enumerate(controls):
+            color = (255, 255, 200) if i == 0 else self.TEXT_COLOR
+            font = self.font if i == 0 else self.small_font
+            text_surface = font.render(text, True, color)
+            self.screen.blit(text_surface, (self.width - 300, 20 + i * 28))
+    
+    def run(self):
+        """Main game loop."""
+        clock = pygame.time.Clock()
+        
+        running = True
+        while running:
+            running = self.handle_events()
+            self.update()
+            self.draw()
+            clock.tick(60)  # Cap at 60 FPS
+        
+        pygame.quit()
+
+
+def gui_main():
+    """Main function to run the GUI."""
+    print("Starting Conway's Game of Life GUI...")
+    print("Controls:")
+    print("  SPACE: Play/Pause")
+    print("  R: Reset grid")
+    print("  C: Clear grid")
+    print("  +/-: Adjust speed")
+    print("  1-7: Select patterns")
+    print("  D: Toggle draw mode (alive/dead)")
+    print("  F: Fill random")
+    print("  L-click: Draw cells")
+    print("  R-click: Place pattern")
+    print("  ESC: Quit")
+    print()
+    
+    # Create and run the GUI
+    gui = GameOfLifeGUI(width=1000, height=700, cell_size=18)
+    gui.run()
+
+
 def demo() -> None:
     """Demonstrate the Game of Life with various patterns."""
     print("Conway's Game of Life Demo")
@@ -338,4 +636,8 @@ def demo() -> None:
 
 
 if __name__ == "__main__":
-    demo()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--gui":
+        gui_main()
+    else:
+        demo()
