@@ -2,19 +2,22 @@
 """
 Conway's Game of Life implementation.
 
-A cellular automaton simulation with Conway's rules and predefined patterns.
+A cellular automaton simulation with configurable rules and predefined patterns.
+Supports multiple rulesets including Conway's Life, HighLife, Seeds, and Day & Night.
 """
 
-import json
 import numpy as np
-from typing import List, Tuple, Optional
-from pathlib import Path
+from typing import List, Tuple, Optional, Dict, Callable, Any
+from enum import Enum
 
-try:
-    import config
-    USE_CONFIG = True
-except ImportError:
-    USE_CONFIG = False
+
+class Ruleset(Enum):
+    """Enumeration of supported cellular automaton rulesets."""
+    CONWAY = "conway"
+    HIGHLIFE = "highlife"
+    SEEDS = "seeds"
+    DAY_NIGHT = "day_night"
+    LIFE_WITHOUT_DEATH = "life_without_death"
 
 
 class GameOfLife:
@@ -25,19 +28,50 @@ class GameOfLife:
         width (int): Width of the grid
         height (int): Height of the grid
         grid (np.ndarray): 2D array representing the grid (1 = alive, 0 = dead)
+        ruleset (Ruleset): Current ruleset being used
+        wrapping (bool): Whether grid edges wrap around (toroidal mode)
     """
     
-    def __init__(self, width: int = 50, height: int = 50):
+    # Class-level pattern cache to avoid recreating patterns
+    _pattern_cache: Dict[str, List[List[int]]] = {}
+    
+    # Ruleset definitions: (birth_conditions, survival_conditions)
+    # Each is a tuple of neighbor counts that trigger the event
+    RULES: Dict[Ruleset, Tuple[Tuple[int, ...], Tuple[int, ...]]] = {
+        Ruleset.CONWAY: ((3,), (2, 3)),
+        Ruleset.HIGHLIFE: ((3, 6), (2, 3)),
+        Ruleset.SEEDS: ((2,), ()),
+        Ruleset.DAY_NIGHT: ((3, 6, 7, 8), (3, 4, 6, 7, 8)),
+        Ruleset.LIFE_WITHOUT_DEATH: ((3,), tuple(range(9))),
+    }
+    
+    def __init__(
+        self, 
+        width: int = 50, 
+        height: int = 50,
+        ruleset: Ruleset = Ruleset.CONWAY,
+        wrapping: bool = False
+    ) -> None:
         """
         Initialize a Game of Life grid.
         
         Args:
             width: Width of the grid (default: 50)
             height: Height of the grid (default: 50)
+            ruleset: Ruleset to use (default: Ruleset.CONWAY)
+            wrapping: Whether to wrap edges (default: False)
         """
         self.width = width
         self.height = height
+        self.ruleset = ruleset
+        self.wrapping = wrapping
         self.grid = np.zeros((height, width), dtype=np.uint8)
+        self._generation = 0
+    
+    @property
+    def generation(self) -> int:
+        """Get current generation number."""
+        return self._generation
     
     def set_cell(self, x: int, y: int, state: int = 1) -> None:
         """
@@ -66,6 +100,12 @@ class GameOfLife:
             return self.grid[y, x]
         return 0
     
+    def _get_wrapped_coords(self, x: int, y: int) -> Tuple[int, int]:
+        """Get wrapped coordinates for toroidal mode."""
+        if self.wrapping:
+            return (x % self.width, y % self.height)
+        return (x, y)
+    
     def count_neighbors(self, x: int, y: int) -> int:
         """
         Count the number of live neighbors around a cell.
@@ -78,83 +118,111 @@ class GameOfLife:
             Number of live neighbors (0-8)
         """
         count = 0
-        for dy in [-1, 0, 1]:
-            for dx in [-1, 0, 1]:
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
                 if dx == 0 and dy == 0:
                     continue
                 nx, ny = x + dx, y + dy
-                if 0 <= nx < self.width and 0 <= ny < self.height:
+                
+                if self.wrapping:
+                    nx = nx % self.width
+                    ny = ny % self.height
+                    count += self.grid[ny, nx]
+                elif 0 <= nx < self.width and 0 <= ny < self.height:
                     count += self.grid[ny, nx]
         return count
     
+    def _get_neighbors_array(self) -> np.ndarray:
+        """
+        Get an array of neighbor counts for all cells.
+        
+        Returns:
+            2D array of neighbor counts
+        """
+        if self.wrapping:
+            # For wrapping mode, use roll operations
+            return (
+                np.roll(self.grid, 1, axis=0) +  # up
+                np.roll(self.grid, -1, axis=0) +  # down
+                np.roll(self.grid, 1, axis=1) +  # left
+                np.roll(self.grid, -1, axis=1) +  # right
+                np.roll(np.roll(self.grid, 1, axis=0), 1, axis=1) +  # up-left
+                np.roll(np.roll(self.grid, 1, axis=0), -1, axis=1) +  # up-right
+                np.roll(np.roll(self.grid, -1, axis=0), 1, axis=1) +  # down-left
+                np.roll(np.roll(self.grid, -1, axis=0), -1, axis=1)  # down-right
+            )
+        else:
+            # Non-wrapping mode with padding
+            padded = np.pad(self.grid, pad_width=1, mode='constant', constant_values=0)
+            return (
+                padded[0:-2, 0:-2] +  # top-left
+                padded[0:-2, 1:-1] +  # top
+                padded[0:-2, 2:] +    # top-right
+                padded[1:-1, 0:-2] +  # left
+                padded[1:-1, 2:] +    # right
+                padded[2:, 0:-2] +    # bottom-left
+                padded[2:, 1:-1] +    # bottom
+                padded[2:, 2:]        # bottom-right
+            )
+    
     def next_generation(self) -> np.ndarray:
         """
-        Compute the next generation according to Conway's rules.
+        Compute the next generation according to current ruleset.
         
         Returns:
             New grid state
         """
-        new_grid = np.zeros((self.height, self.width), dtype=np.uint8)
+        birth_cond, survival_cond = self.RULES[self.ruleset]
+        neighbors = self._get_neighbors_array()
         
-        for y in range(self.height):
-            for x in range(self.width):
-                neighbors = self.count_neighbors(x, y)
-                current_state = self.grid[y, x]
-                
-                # Apply Conway's rules:
-                # 1. Any live cell with fewer than two live neighbors dies (underpopulation)
-                # 2. Any live cell with two or three live neighbors lives on
-                # 3. Any live cell with more than three live neighbors dies (overpopulation)
-                # 4. Any dead cell with exactly three live neighbors becomes a live cell (reproduction)
-                
-                if current_state == 1:  # Cell is alive
-                    if neighbors == 2 or neighbors == 3:
-                        new_grid[y, x] = 1  # Survives
-                    # else dies (stays 0)
-                else:  # Cell is dead
-                    if neighbors == 3:
-                        new_grid[y, x] = 1  # Birth
+        # Convert conditions to sets for O(1) lookup
+        birth_set = set(birth_cond)
+        survival_set = set(survival_cond)
         
-        self.grid = new_grid
-        return new_grid
+        # Apply rules using vectorized operations
+        live_cells = self.grid == 1
+        dead_cells = self.grid == 0
+        
+        # Vectorized condition checking
+        survive = live_cells & np.isin(neighbors, list(survival_set))
+        birth = dead_cells & np.isin(neighbors, list(birth_set))
+        
+        self.grid = (survive | birth).astype(np.uint8)
+        self._generation += 1
+        return self.grid
     
     def next_generation_vectorized(self) -> np.ndarray:
         """
-        Compute the next generation using NumPy vectorization for better performance.
-        
-        This is significantly faster for large grids as it avoids Python loops.
+        Compute the next generation using NumPy vectorization.
+        Alias for next_generation() for backwards compatibility.
         
         Returns:
             New grid state
         """
-        # Create padded grid to handle edge cases
-        padded = np.pad(self.grid, pad_width=1, mode='constant', constant_values=0)
+        return self.next_generation()
+    
+    def set_ruleset(self, ruleset: Ruleset) -> None:
+        """
+        Change the ruleset.
         
-        # Count neighbors using convolution-like approach
-        neighbors = (
-            padded[0:-2, 0:-2] +  # top-left
-            padded[0:-2, 1:-1] +  # top
-            padded[0:-2, 2:] +    # top-right
-            padded[1:-1, 0:-2] +  # left
-            padded[1:-1, 2:] +    # right
-            padded[2:, 0:-2] +    # bottom-left
-            padded[2:, 1:-1] +    # bottom
-            padded[2:, 2:]        # bottom-right
-        )
+        Args:
+            ruleset: New ruleset to use
+        """
+        self.ruleset = ruleset
+    
+    def set_wrapping(self, wrapping: bool) -> None:
+        """
+        Toggle grid wrapping (toroidal mode).
         
-        # Apply Conway's rules using vectorized operations
-        # Rule 1 & 3: Live cells with <2 or >3 neighbors die
-        # Rule 2: Live cells with 2 or 3 neighbors survive
-        # Rule 4: Dead cells with exactly 3 neighbors become alive
-        survive = (self.grid == 1) & ((neighbors == 2) | (neighbors == 3))
-        birth = (self.grid == 0) & (neighbors == 3)
-        
-        self.grid = (survive | birth).astype(np.uint8)
-        return self.grid
+        Args:
+            wrapping: Whether to wrap edges
+        """
+        self.wrapping = wrapping
     
     def clear(self) -> None:
-        """Clear the grid (set all cells to dead)."""
+        """Clear the grid (set all cells to dead) and reset generation counter."""
         self.grid = np.zeros((self.height, self.width), dtype=np.uint8)
+        self._generation = 0
     
     def randomize(self, density: float = 0.3) -> None:
         """
@@ -163,8 +231,12 @@ class GameOfLife:
         Args:
             density: Probability of a cell being alive (default: 0.3)
         """
-        self.grid = np.random.choice([0, 1], size=(self.height, self.width), 
-                                     p=[1-density, density]).astype(np.uint8)
+        self.grid = np.random.choice(
+            [0, 1], 
+            size=(self.height, self.width),
+            p=[1 - density, density]
+        ).astype(np.uint8)
+        self._generation = 0
     
     def add_pattern(self, pattern: List[List[int]], x: int, y: int) -> None:
         """
@@ -186,39 +258,6 @@ class GameOfLife:
                     if 0 <= cell_x < self.width and 0 <= cell_y < self.height:
                         self.set_cell(cell_x, cell_y, 1)
     
-    def save_to_file(self, filepath: str) -> None:
-        """
-        Save the current grid state to a JSON file.
-        
-        Args:
-            filepath: Path to the output file
-        """
-        data = {
-            'width': self.width,
-            'height': self.height,
-            'grid': self.grid.tolist()
-        }
-        with open(filepath, 'w') as f:
-            json.dump(data, f)
-    
-    @classmethod
-    def load_from_file(cls, filepath: str) -> 'GameOfLife':
-        """
-        Load a grid state from a JSON file.
-        
-        Args:
-            filepath: Path to the input file
-            
-        Returns:
-            GameOfLife instance with loaded state
-        """
-        with open(filepath, 'r') as f:
-            data = json.load(f)
-        
-        game = cls(data['width'], data['height'])
-        game.grid = np.array(data['grid'], dtype=np.uint8)
-        return game
-    
     def __str__(self) -> str:
         """String representation of the grid."""
         rows = []
@@ -227,176 +266,228 @@ class GameOfLife:
             rows.append(row)
         return '\n'.join(rows)
     
-    @staticmethod
-    def block() -> List[List[int]]:
-        """
-        Create a 2x2 Block pattern (still life).
-        
-        Returns:
-            2D list representing the Block pattern
-        """
-        return [
-            [1, 1],
-            [1, 1]
-        ]
+    # =========================================================================
+    # Pattern Definitions - Cached for performance
+    # =========================================================================
     
-    @staticmethod
-    def blinker() -> List[List[int]]:
-        """
-        Create a 3x1 Blinker pattern (oscillator, period 2).
-        
-        Returns:
-            2D list representing the Blinker pattern
-        """
-        return [
-            [1, 1, 1]
-        ]
+    @classmethod
+    def block(cls) -> List[List[int]]:
+        """Create a 2x2 Block pattern (still life)."""
+        if 'block' not in cls._pattern_cache:
+            cls._pattern_cache['block'] = [[1, 1], [1, 1]]
+        return cls._pattern_cache['block']
     
-    @staticmethod
-    def glider() -> List[List[int]]:
-        """
-        Create a 3x3 Glider pattern (spaceship).
-        
-        Returns:
-            2D list representing the Glider pattern
-        """
-        return [
-            [0, 1, 0],
-            [0, 0, 1],
-            [1, 1, 1]
-        ]
+    @classmethod
+    def blinker(cls) -> List[List[int]]:
+        """Create a 3x1 Blinker pattern (oscillator, period 2)."""
+        if 'blinker' not in cls._pattern_cache:
+            cls._pattern_cache['blinker'] = [[1, 1, 1]]
+        return cls._pattern_cache['blinker']
     
-    @staticmethod
-    def beacon() -> List[List[int]]:
-        """
-        Create a 4x4 Beacon pattern (oscillator, period 2).
-        
-        Returns:
-            2D list representing the Beacon pattern
-        """
-        return [
-            [1, 1, 0, 0],
-            [1, 1, 0, 0],
-            [0, 0, 1, 1],
-            [0, 0, 1, 1]
-        ]
+    @classmethod
+    def glider(cls) -> List[List[int]]:
+        """Create a 3x3 Glider pattern (spaceship)."""
+        if 'glider' not in cls._pattern_cache:
+            cls._pattern_cache['glider'] = [
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 1, 1]
+            ]
+        return cls._pattern_cache['glider']
     
-    @staticmethod
-    def pulsar() -> List[List[int]]:
-        """
-        Create a 13x13 Pulsar pattern (oscillator, period 3).
-        
-        Returns:
-            2D list representing the Pulsar pattern
-        """
-        # Pulsar is symmetric, we'll create one quadrant and mirror
-        quadrant = [
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0],
-            [1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 1],
-            [0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 1, 1, 1, 0, 0]
-        ]
-        
-        # Create full pattern by mirroring
-        full_pattern = []
-        for row in quadrant:
-            full_row = row + [0] + row[::-1]
-            full_pattern.append(full_row)
-        
-        middle_row = [0] * 13
-        full_pattern = full_pattern + [middle_row] + full_pattern[::-1]
-        
-        return full_pattern
+    @classmethod
+    def beacon(cls) -> List[List[int]]:
+        """Create a 4x4 Beacon pattern (oscillator, period 2)."""
+        if 'beacon' not in cls._pattern_cache:
+            cls._pattern_cache['beacon'] = [
+                [1, 1, 0, 0],
+                [1, 1, 0, 0],
+                [0, 0, 1, 1],
+                [0, 0, 1, 1]
+            ]
+        return cls._pattern_cache['beacon']
     
-    @staticmethod
-    def lwss() -> List[List[int]]:
-        """
-        Create a 5x4 Lightweight Spaceship (LWSS) pattern.
-        
-        Returns:
-            2D list representing the LWSS pattern
-        """
-        return [
-            [0, 1, 0, 0, 1],
-            [1, 0, 0, 0, 0],
-            [1, 0, 0, 0, 1],
-            [1, 1, 1, 1, 0]
-        ]
+    @classmethod
+    def pulsar(cls) -> List[List[int]]:
+        """Create a 13x13 Pulsar pattern (oscillator, period 3)."""
+        if 'pulsar' not in cls._pattern_cache:
+            quadrant = [
+                [0, 0, 1, 1, 1, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0, 1],
+                [1, 0, 0, 0, 0, 0, 1],
+                [1, 0, 0, 0, 0, 0, 1],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 1, 1, 1, 0, 0]
+            ]
+            full_pattern = []
+            for row in quadrant:
+                full_row = row + [0] + row[::-1]
+                full_pattern.append(full_row)
+            middle_row = [0] * 13
+            full_pattern = full_pattern + [middle_row] + full_pattern[::-1]
+            cls._pattern_cache['pulsar'] = full_pattern
+        return cls._pattern_cache['pulsar']
     
-    @staticmethod
-    def toad() -> List[List[int]]:
-        """
-        Create a 4x3 Toad pattern (oscillator, period 2).
-        
-        Returns:
-            2D list representing the Toad pattern
-        """
-        return [
-            [0, 1, 1, 1],
-            [1, 1, 1, 0]
-        ]
+    @classmethod
+    def lwss(cls) -> List[List[int]]:
+        """Create a 5x4 Lightweight Spaceship (LWSS) pattern."""
+        if 'lwss' not in cls._pattern_cache:
+            cls._pattern_cache['lwss'] = [
+                [0, 1, 0, 0, 1],
+                [1, 0, 0, 0, 0],
+                [1, 0, 0, 0, 1],
+                [1, 1, 1, 1, 0]
+            ]
+        return cls._pattern_cache['lwss']
     
-    @staticmethod
-    def pentadecathlon() -> List[List[int]]:
-        """
-        Create a proper 16x9 Pentadecathlon pattern (oscillator, period 15).
-        
-        Returns:
-            2D list representing the Pentadecathlon pattern
-        """
-        # This is a proper pentadecathlon - a period-15 oscillator
-        return [
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        ]
+    @classmethod
+    def toad(cls) -> List[List[int]]:
+        """Create a 4x3 Toad pattern (oscillator, period 2)."""
+        if 'toad' not in cls._pattern_cache:
+            cls._pattern_cache['toad'] = [
+                [0, 1, 1, 1],
+                [1, 1, 1, 0]
+            ]
+        return cls._pattern_cache['toad']
     
-    @staticmethod
-    def gosper_glider_gun() -> List[List[int]]:
-        """
-        Create a 36x9 Gosper Glider Gun pattern.
-        This is the first discovered glider gun and produces gliders indefinitely.
-        
-        Returns:
-            2D list representing the Gosper Glider Gun pattern
-        """
-        return [
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0],
-            [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        ]
+    @classmethod
+    def pentadecathlon(cls) -> List[List[int]]:
+        """Create a 16x9 Pentadecathlon pattern (oscillator, period 15)."""
+        if 'pentadecathlon' not in cls._pattern_cache:
+            cls._pattern_cache['pentadecathlon'] = [
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ]
+        return cls._pattern_cache['pentadecathlon']
     
-    @staticmethod
-    def r_pentomino() -> List[List[int]]:
-        """
-        Create a 5x5 R-Pentomino pattern.
-        This is a methuselah that evolves for over 1100 generations before stabilizing.
-        
-        Returns:
-            2D list representing the R-Pentomino pattern
-        """
-        return [
-            [0, 0, 1, 1, 0],
-            [1, 1, 0, 1, 0],
-            [0, 1, 0, 0, 0],
-            [0, 0, 1, 0, 0],
-            [0, 0, 0, 0, 0]
-        ]
+    # =========================================================================
+    # NEW PATTERNS - Added as improvements
+    # =========================================================================
+    
+    @classmethod
+    def gosper_glider_gun(cls) -> List[List[int]]:
+        """Create the Gosper Glider Gun (36x9) - produces infinite gliders."""
+        if 'gosper_glider_gun' not in cls._pattern_cache:
+            cls._pattern_cache['gosper_glider_gun'] = [
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
+                [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ]
+        return cls._pattern_cache['gosper_glider_gun']
+    
+    @classmethod
+    def r_pentomino(cls) -> List[List[int]]:
+        """Create the R-pentomino (5x5) - famous methuselah with 2336 generation lifespan."""
+        if 'r_pentomino' not in cls._pattern_cache:
+            cls._pattern_cache['r_pentomino'] = [
+                [0, 1, 1, 0, 0],
+                [1, 1, 0, 0, 0],
+                [0, 1, 0, 0, 0],
+                [0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0]
+            ]
+        return cls._pattern_cache['r_pentomino']
+    
+    @classmethod
+    def diehard(cls) -> List[List[int]]:
+        """Create Diehard pattern (7x3) - methuselah that dies after 130 generations."""
+        if 'diehard' not in cls._pattern_cache:
+            cls._pattern_cache['diehard'] = [
+                [0, 0, 0, 0, 0, 0, 1],
+                [1, 1, 0, 0, 0, 0, 0],
+                [0, 1, 0, 0, 0, 1, 1]
+            ]
+        return cls._pattern_cache['diehard']
+    
+    @classmethod
+    def acorn(cls) -> List[List[int]]:
+        """Create Acorn pattern (7x3) - methuselah that takes 5206 generations to stabilize."""
+        if 'acorn' not in cls._pattern_cache:
+            cls._pattern_cache['acorn'] = [
+                [0, 1, 0, 0, 0, 0, 0],
+                [0, 0, 0, 1, 0, 0, 0],
+                [1, 1, 0, 0, 1, 1, 1]
+            ]
+        return cls._pattern_cache['acorn']
+    
+    @classmethod
+    def hwss(cls) -> List[List[int]]:
+        """Create Heavy Weight Spaceship (7x4)."""
+        if 'hwss' not in cls._pattern_cache:
+            cls._pattern_cache['hwss'] = [
+                [0, 0, 1, 0, 0, 0, 1],
+                [1, 0, 0, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0, 1],
+                [1, 1, 1, 1, 1, 1, 0]
+            ]
+        return cls._pattern_cache['hwss']
+    
+    @classmethod
+    def eater(cls) -> List[List[int]]:
+        """Create Eater pattern (5x4) - pattern that absorbs gliders."""
+        if 'eater' not in cls._pattern_cache:
+            cls._pattern_cache['eater'] = [
+                [0, 1, 1, 0, 0],
+                [1, 1, 0, 1, 0],
+                [0, 0, 0, 1, 0],
+                [0, 0, 0, 1, 1]
+            ]
+        return cls._pattern_cache['eater']
+    
+    @classmethod
+    def infinite_growth(cls) -> List[List[int]]:
+        """Create Infinite Growth pattern (9x5) - pattern that grows indefinitely."""
+        if 'infinite_growth' not in cls._pattern_cache:
+            cls._pattern_cache['infinite_growth'] = [
+                [0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 1, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 1, 0, 0, 0, 0, 0],
+                [0, 1, 1, 1, 0, 0, 1, 1, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ]
+        return cls._pattern_cache['infinite_growth']
+    
+    @classmethod
+    def get_all_patterns(cls) -> Dict[str, Callable[[], List[List[int]]]]:
+        """Get all available patterns as a dictionary."""
+        return {
+            'block': cls.block,
+            'blinker': cls.blinker,
+            'glider': cls.glider,
+            'beacon': cls.beacon,
+            'pulsar': cls.pulsar,
+            'lwss': cls.lwss,
+            'toad': cls.toad,
+            'pentadecathlon': cls.pentadecathlon,
+            # New patterns
+            'gosper_glider_gun': cls.gosper_glider_gun,
+            'r_pentomino': cls.r_pentomino,
+            'diehard': cls.diehard,
+            'acorn': cls.acorn,
+            'hwss': cls.hwss,
+            'eater': cls.eater,
+            'infinite_growth': cls.infinite_growth,
+        }
+
+
+# Standalone function for backwards compatibility
+def pentadecathlon() -> List[List[int]]:
+    """Create a proper 16x9 Pentadecathlon pattern (oscillator, period 15)."""
+    return GameOfLife.pentadecathlon()
 
 
 import pygame
@@ -405,63 +496,120 @@ from typing import Tuple, Optional
 import time
 
 
-class GameOfLifeGUI:
-    """
-    PyGame GUI for Conway's Game of Life.
-    """
+class ColorTheme:
+    """Color theme for the Game of Life GUI."""
     
-    def __init__(self, width: int = None, height: int = None, cell_size: int = None):
+    def __init__(
+        self, 
+        name: str,
+        background: Tuple[int, int, int],
+        grid: Tuple[int, int, int],
+        cell_alive: Tuple[int, int, int],
+        cell_dead: Tuple[int, int, int],
+        text: Tuple[int, int, int],
+        highlight: Tuple[int, int, int]
+    ) -> None:
+        self.name = name
+        self.BACKGROUND = background
+        self.GRID_COLOR = grid
+        self.CELL_ALIVE = cell_alive
+        self.CELL_DEAD = cell_dead
+        self.TEXT_COLOR = text
+        self.HIGHLIGHT_COLOR = highlight
+
+
+# Predefined themes
+THEMES = {
+    'dark': ColorTheme(
+        'Dark',
+        (20, 20, 30),
+        (40, 40, 60),
+        (100, 200, 100),
+        (30, 30, 40),
+        (220, 220, 220),
+        (255, 255, 200)
+    ),
+    'matrix': ColorTheme(
+        'Matrix',
+        (0, 0, 0),
+        (0, 20, 0),
+        (0, 255, 0),
+        (0, 10, 0),
+        (0, 255, 0),
+        (200, 255, 200)
+    ),
+    'classic': ColorTheme(
+        'Classic',
+        (255, 255, 255),
+        (200, 200, 200),
+        (0, 0, 0),
+        (255, 255, 255),
+        (0, 0, 0),
+        (100, 100, 100)
+    ),
+    'ocean': ColorTheme(
+        'Ocean',
+        (10, 20, 40),
+        (30, 50, 80),
+        (100, 180, 220),
+        (20, 40, 60),
+        (200, 220, 240),
+        (150, 200, 255)
+    ),
+    'sunset': ColorTheme(
+        'Sunset',
+        (30, 10, 20),
+        (60, 30, 40),
+        (255, 150, 100),
+        (40, 20, 30),
+        (255, 220, 200),
+        (255, 200, 150)
+    ),
+}
+
+
+class GameOfLifeGUI:
+    """PyGame GUI for Conway's Game of Life."""
+    
+    def __init__(
+        self, 
+        width: int = 800, 
+        height: int = 600, 
+        cell_size: int = 15
+    ) -> None:
         """
         Initialize the PyGame GUI.
         
         Args:
-            width: Window width in pixels (default: from config or 800)
-            height: Window height in pixels (default: from config or 600)
-            cell_size: Size of each cell in pixels (default: from config or 15)
+            width: Window width in pixels (default: 800)
+            height: Window height in pixels (default: 600)
+            cell_size: Size of each cell in pixels (default: 15)
         """
-        # Load settings from config if available
-        if USE_CONFIG:
-            w = width if width is not None else getattr(config, 'GUI_WIDTH', 1000)
-            h = height if height is not None else getattr(config, 'GUI_HEIGHT', 700)
-            cs = cell_size if cell_size is not None else getattr(config, 'GUI_CELL_SIZE', 18)
-        else:
-            w = width if width is not None else 1000
-            h = height if height is not None else 700
-            cs = cell_size if cell_size is not None else 18
-        
         pygame.init()
         
-        self.width = w
-        self.height = h
-        self.cell_size = cs
+        self.width = width
+        self.height = height
+        self.cell_size = cell_size
         
         # Calculate grid dimensions based on cell size
         self.grid_width = width // cell_size
         self.grid_height = height // cell_size
         
-        # Create the game instance
-        self.game = GameOfLife(self.grid_width, self.grid_height)
+        # Create the game instance with new features
+        self.game = GameOfLife(
+            self.grid_width, 
+            self.grid_height,
+            ruleset=Ruleset.CONWAY,
+            wrapping=False
+        )
         
         # Create the screen
         self.screen = pygame.display.set_mode((width, height))
         pygame.display.set_caption("Conway's Game of Life")
         
-        # Load colors from config if available
-        if USE_CONFIG:
-            self.BACKGROUND = config.COLORS.get('background', (20, 20, 30))
-            self.GRID_COLOR = config.COLORS.get('grid', (40, 40, 60))
-            self.CELL_ALIVE = config.COLORS.get('cell_alive', (100, 200, 100))
-            self.CELL_DEAD = config.COLORS.get('cell_dead', (30, 30, 40))
-            self.TEXT_COLOR = config.COLORS.get('text', (220, 220, 220))
-            self.HIGHLIGHT_COLOR = config.COLORS.get('highlight', (255, 255, 200))
-        else:
-            # Colors
-            self.BACKGROUND = (20, 20, 30)
-            self.GRID_COLOR = (40, 40, 60)
-            self.CELL_ALIVE = (100, 200, 100)
-            self.CELL_DEAD = (30, 30, 40)
-            self.TEXT_COLOR = (220, 220, 220)
-            self.HIGHLIGHT_COLOR = (255, 255, 200)
+        # Theme support
+        self.current_theme = 'dark'
+        self.theme = THEMES[self.current_theme]
         
         # Font
         self.font = pygame.font.SysFont('Arial', 20)
@@ -474,24 +622,35 @@ class GameOfLifeGUI:
         self.last_update = 0
         self.dragging = False
         self.draw_mode = 1  # 1 for alive, 0 for dead
-        self.use_vectorized = True  # Use optimized algorithm by default
         
-        # Pattern selection
-        self.patterns = {
-            'block': GameOfLife.block,
-            'blinker': GameOfLife.blinker,
-            'glider': GameOfLife.glider,
-            'beacon': GameOfLife.beacon,
-            'pulsar': GameOfLife.pulsar,
-            'lwss': GameOfLife.lwss,
-            'toad': GameOfLife.toad,
-            'pentadecathlon': GameOfLife.pentadecathlon,
-            'gosper_glider_gun': GameOfLife.gosper_glider_gun,
-            'r_pentomino': GameOfLife.r_pentomino
-        }
+        # Pattern selection - now includes new patterns
+        self.patterns = GameOfLife.get_all_patterns()
         self.current_pattern = 'glider'
+        
+        # Ruleset selection
+        self.rulesets = {
+            'conway': Ruleset.CONWAY,
+            'highlife': Ruleset.HIGHLIFE,
+            'seeds': Ruleset.SEEDS,
+            'day_night': Ruleset.DAY_NIGHT,
+            'life_no_death': Ruleset.LIFE_WITHOUT_DEATH,
+        }
+        self.current_ruleset = 'conway'
+        
+        # New: Step mode
+        self.step_mode = False
+        
+        # New: Theme index for cycling
+        self.theme_names = list(THEMES.keys())
     
-    def handle_events(self):
+    def _apply_colors(self) -> None:
+        """Apply current theme colors to GUI."""
+        colors = ['BACKGROUND', 'GRID_COLOR', 'CELL_ALIVE', 'CELL_DEAD', 
+                  'TEXT_COLOR', 'HIGHLIGHT_COLOR']
+        for color in colors:
+            setattr(self, color, getattr(self.theme, color))
+    
+    def handle_events(self) -> bool:
         """Handle PyGame events."""
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -501,6 +660,12 @@ class GameOfLifeGUI:
                 # Space: Play/Pause
                 if event.key == pygame.K_SPACE:
                     self.running = not self.running
+                
+                # Enter: Step (when paused)
+                elif event.key == pygame.K_RETURN:
+                    if not self.running:
+                        self.game.next_generation()
+                        self.generation = self.game.generation
                 
                 # R: Reset (clear grid)
                 elif event.key == pygame.K_r:
@@ -512,38 +677,44 @@ class GameOfLifeGUI:
                     self.game.clear()
                     self.generation = 0
                 
-                # S: Save grid
-                elif event.key == pygame.K_s:
-                    self._save_grid()
-                
-                # L: Load grid
-                elif event.key == pygame.K_l:
-                    self._load_grid()
-                
-                # +/-: Adjust speed
-                elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
+                # +/- or [/]: Adjust speed
+                elif event.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_RIGHTBRACKET):
                     self.speed = min(60, self.speed + 2)
-                elif event.key == pygame.K_MINUS:
+                elif event.key in (pygame.K_MINUS, pygame.K_LEFTBRACKET):
                     self.speed = max(1, self.speed - 2)
                 
-                # V: Toggle vectorized mode
-                elif event.key == pygame.K_v:
-                    self.use_vectorized = not self.use_vectorized
+                # W: Toggle wrapping (toroidal mode)
+                elif event.key == pygame.K_w:
+                    self.game.wrapping = not self.game.wrapping
                 
-                # 1-9: Select patterns
-                pattern_keys = {
-                    pygame.K_1: 'block',
-                    pygame.K_2: 'blinker',
-                    pygame.K_3: 'glider',
-                    pygame.K_4: 'beacon',
-                    pygame.K_5: 'pulsar',
-                    pygame.K_6: 'lwss',
-                    pygame.K_7: 'toad',
-                    pygame.K_8: 'pentadecathlon',
-                    pygame.K_9: 'gosper_glider_gun',
+                # T: Cycle through themes
+                elif event.key == pygame.K_t:
+                    idx = (self.theme_names.index(self.current_theme) + 1) % len(self.theme_names)
+                    self.current_theme = self.theme_names[idx]
+                    self.theme = THEMES[self.current_theme]
+                    self._apply_colors()
+                
+                # 1-9, 0: Select patterns
+                pattern_keys = list(self.patterns.keys())
+                key_map = {
+                    pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_4: 3,
+                    pygame.K_5: 4, pygame.K_6: 5, pygame.K_7: 6, pygame.K_8: 7,
+                    pygame.K_9: 8, pygame.K_0: 9
                 }
-                if event.key in pattern_keys:
-                    self.current_pattern = pattern_keys[event.key]
+                if event.key in key_map and key_map[event.key] < len(pattern_keys):
+                    self.current_pattern = pattern_keys[key_map[event.key]]
+                
+                # J/K: Cycle rulesets
+                elif event.key == pygame.K_j:
+                    ruleset_list = list(self.rulesets.keys())
+                    idx = (ruleset_list.index(self.current_ruleset) + 1) % len(ruleset_list)
+                    self.current_ruleset = ruleset_list[idx]
+                    self.game.set_ruleset(self.rulesets[self.current_ruleset])
+                elif event.key == pygame.K_k:
+                    ruleset_list = list(self.rulesets.keys())
+                    idx = (ruleset_list.index(self.current_ruleset) - 1) % len(ruleset_list)
+                    self.current_ruleset = ruleset_list[idx]
+                    self.game.set_ruleset(self.rulesets[self.current_ruleset])
                 
                 # D: Toggle draw mode (alive/dead)
                 elif event.key == pygame.K_d:
@@ -553,6 +724,10 @@ class GameOfLifeGUI:
                 elif event.key == pygame.K_f:
                     self.game.randomize(0.3)
                     self.generation = 0
+                
+                # G: Toggle grid
+                elif event.key == pygame.K_g:
+                    self.show_grid = not self.show_grid if hasattr(self, 'show_grid') else False
                 
                 # ESC: Quit
                 elif event.key == pygame.K_ESCAPE:
@@ -567,10 +742,11 @@ class GameOfLifeGUI:
                     x, y = self.screen_to_grid(event.pos)
                     pattern_func = self.patterns.get(self.current_pattern)
                     if pattern_func:
-                        self.game.add_pattern(pattern_func(), x, y)
+                        pattern = pattern_func()
+                        self.game.add_pattern(pattern, x, y)
             
             elif event.type == pygame.MOUSEBUTTONUP:
-                if event.button == 1:  # Left click
+                if event.button == 1:
                     self.dragging = False
             
             elif event.type == pygame.MOUSEMOTION:
@@ -579,69 +755,49 @@ class GameOfLifeGUI:
         
         return True
     
-    def _save_grid(self) -> None:
-        """Save the current grid to a file."""
-        try:
-            self.game.save_to_file('game_of_life_save.json')
-            print("Grid saved to game_of_life_save.json")
-        except Exception as e:
-            print(f"Error saving grid: {e}")
-    
-    def _load_grid(self) -> None:
-        """Load a grid from a file."""
-        try:
-            self.game = GameOfLife.load_from_file('game_of_life_save.json')
-            self.grid_width = self.game.width
-            self.grid_height = self.game.height
-            self.generation = 0
-            print("Grid loaded from game_of_life_save.json")
-        except Exception as e:
-            print(f"Error loading grid: {e}")
-    
-    def handle_click(self, pos):
+    def handle_click(self, pos: Tuple[int, int]) -> None:
         """Handle mouse click at position."""
         x, y = self.screen_to_grid(pos)
         if 0 <= x < self.grid_width and 0 <= y < self.grid_height:
-            current_state = self.game.get_cell(x, y)
-            # Toggle or set based on draw mode
             if self.draw_mode == 1:
                 self.game.set_cell(x, y, 1)
             else:
                 self.game.set_cell(x, y, 0)
     
-    def screen_to_grid(self, pos):
+    def screen_to_grid(self, pos: Tuple[int, int]) -> Tuple[int, int]:
         """Convert screen coordinates to grid coordinates."""
         x, y = pos
         grid_x = x // self.cell_size
         grid_y = y // self.cell_size
         return grid_x, grid_y
     
-    def update(self):
+    def update(self) -> None:
         """Update game state if running."""
         if not self.running:
             return
         
         current_time = time.time()
         if current_time - self.last_update > 1.0 / self.speed:
-            if self.use_vectorized:
-                self.game.next_generation_vectorized()
-            else:
-                self.game.next_generation()
-            self.generation += 1
+            self.game.next_generation()
+            self.generation = self.game.generation
             self.last_update = current_time
     
-    def draw(self):
+    def draw(self) -> None:
         """Draw everything to the screen."""
         # Clear screen
         self.screen.fill(self.BACKGROUND)
         
         # Draw grid lines
         for x in range(0, self.width, self.cell_size):
-            pygame.draw.line(self.screen, self.GRID_COLOR, 
-                           (x, 0), (x, self.height), 1)
+            pygame.draw.line(
+                self.screen, self.GRID_COLOR,
+                (x, 0), (x, self.height), 1
+            )
         for y in range(0, self.height, self.cell_size):
-            pygame.draw.line(self.screen, self.GRID_COLOR,
-                           (0, y), (self.width, y), 1)
+            pygame.draw.line(
+                self.screen, self.GRID_COLOR,
+                (0, y), (self.width, y), 1
+            )
         
         # Draw cells
         for y in range(self.grid_height):
@@ -662,45 +818,63 @@ class GameOfLifeGUI:
         # Update display
         pygame.display.flip()
     
-    def draw_ui(self):
+    def draw_ui(self) -> None:
         """Draw UI elements and text."""
-        # Status text
+        # Status
         status = "RUNNING" if self.running else "PAUSED"
         status_color = (100, 255, 100) if self.running else (255, 100, 100)
         
+        # Calculate population
+        population = int(np.sum(self.game.grid))
+        
+        ruleset_display = {
+            'conway': 'Conway',
+            'highlife': 'HighLife',
+            'seeds': 'Seeds',
+            'day_night': 'Day&Night',
+            'life_no_death': 'NoDeath'
+        }
+        
         texts = [
             f"Generation: {self.generation}",
+            f"Population: {population}",
             f"Status: {status}",
             f"Speed: {self.speed} FPS",
             f"Grid: {self.grid_width}x{self.grid_height}",
             f"Pattern: {self.current_pattern}",
-            f"Draw mode: {'ALIVE' if self.draw_mode == 1 else 'DEAD'}",
-            f"Method: {'VECTORIZED' if self.use_vectorized else 'ITERATIVE'}"
+            f"Ruleset: {ruleset_display.get(self.current_ruleset, self.current_ruleset)}",
+            f"Wrapping: {'ON' if self.game.wrapping else 'OFF'}",
+            f"Theme: {self.theme.name}",
+            f"Draw: {'ALIVE' if self.draw_mode == 1 else 'DEAD'}"
         ]
         
         # Draw text background
-        pygame.draw.rect(self.screen, (30, 30, 45, 200), 
-                        (10, 10, 320, 200), border_radius=8)
-        pygame.draw.rect(self.screen, (60, 60, 80), 
-                        (10, 10, 320, 200), 2, border_radius=8)
+        pygame.draw.rect(
+            self.screen, (30, 30, 45, 230),
+            (10, 10, 280, 300), border_radius=8
+        )
+        pygame.draw.rect(
+            self.screen, (60, 60, 80),
+            (10, 10, 280, 300), 2, border_radius=8
+        )
         
         # Draw texts
         for i, text in enumerate(texts):
-            color = status_color if i == 1 else self.TEXT_COLOR
+            color = status_color if i == 2 else self.TEXT_COLOR
             text_surface = self.font.render(text, True, color)
             self.screen.blit(text_surface, (20, 20 + i * 28))
         
-        # Draw controls help
+        # Controls help
         controls = [
             "CONTROLS:",
             "SPACE: Play/Pause",
+            "ENTER: Step (when paused)",
             "R: Reset grid",
             "C: Clear grid",
-            "S: Save grid",
-            "L: Load grid",
             "+/-: Adjust speed",
-            "V: Toggle method",
-            "1-9: Select pattern",
+            "W: Toggle wrapping",
+            "T: Cycle theme",
+            "J/K: Cycle ruleset",
             "D: Toggle draw mode",
             "F: Fill random",
             "L-click: Draw cells",
@@ -709,19 +883,23 @@ class GameOfLifeGUI:
         ]
         
         # Draw controls background
-        pygame.draw.rect(self.screen, (30, 30, 45, 200),
-                        (self.width - 310, 10, 300, 400), border_radius=8)
-        pygame.draw.rect(self.screen, (60, 60, 80),
-                        (self.width - 310, 10, 300, 400), 2, border_radius=8)
+        pygame.draw.rect(
+            self.screen, (30, 30, 45, 230),
+            (self.width - 320, 10, 310, 420), border_radius=8
+        )
+        pygame.draw.rect(
+            self.screen, (60, 60, 80),
+            (self.width - 320, 10, 310, 420), 2, border_radius=8
+        )
         
-        # Draw controls text
+        # Draw controls
         for i, text in enumerate(controls):
             color = (255, 255, 200) if i == 0 else self.TEXT_COLOR
             font = self.font if i == 0 else self.small_font
             text_surface = font.render(text, True, color)
-            self.screen.blit(text_surface, (self.width - 300, 20 + i * 28))
+            self.screen.blit(text_surface, (self.width - 310, 20 + i * 28))
     
-    def run(self):
+    def run(self) -> None:
         """Main game loop."""
         clock = pygame.time.Clock()
         
@@ -735,53 +913,45 @@ class GameOfLifeGUI:
         pygame.quit()
 
 
-def gui_main():
+def gui_main() -> None:
     """Main function to run the GUI."""
     print("Starting Conway's Game of Life GUI...")
+    print("Features: Multiple rulesets, patterns, themes, wrapping mode")
+    print()
     print("Controls:")
-    print("  SPACE: Play/Pause")
-    print("  R: Reset grid")
-    print("  C: Clear grid")
-    print("  S: Save grid")
-    print("  L: Load grid")
-    print("  +/-: Adjust speed")
-    print("  V: Toggle vectorized/iterative method")
-    print("  1-9: Select patterns")
-    print("  D: Toggle draw mode (alive/dead)")
-    print("  F: Fill random")
-    print("  L-click: Draw cells")
-    print("  R-click: Place pattern")
-    print("  ESC: Quit")
+    print("  SPACE: Play/Pause  |  ENTER: Step  |  R: Reset  |  C: Clear")
+    print("  +/-: Speed  |  W: Wrapping  |  T: Theme  |  J/K: Rulesets")
+    print("  1-0: Patterns  |  D: Draw mode  |  F: Random fill")
+    print("  L-click: Draw  |  R-click: Place pattern  |  ESC: Quit")
     print()
     
-    # Create and run the GUI
-    gui = GameOfLifeGUI()
+    gui = GameOfLifeGUI(width=1000, height=700, cell_size=15)
     gui.run()
 
 
 def demo() -> None:
     """Demonstrate the Game of Life with various patterns."""
     print("Conway's Game of Life Demo")
-    print("=" * 40)
+    print("=" * 50)
     
-    # Create a game with a larger grid
+    # Create a game
     game = GameOfLife(40, 20)
     
     # Add different patterns
     print("\n1. Adding Block pattern (still life):")
-    game.add_pattern(GameOfLife.block(), 5, 5)
+    game.add_pattern(GameOfLife.block(), 2, 5)
     
-    print("\n2. Adding Blinker pattern (oscillator):")
-    game.add_pattern(GameOfLife.blinker(), 15, 5)
+    print("\n2. Adding R-pentomino (methuselah):")
+    game.add_pattern(GameOfLife.r_pentomino(), 20, 8)
     
     print("\n3. Adding Glider pattern (spaceship):")
-    game.add_pattern(GameOfLife.glider(), 25, 5)
+    game.add_pattern(GameOfLife.glider(), 30, 5)
     
-    print("\n4. Adding Beacon pattern (oscillator):")
-    game.add_pattern(GameOfLife.beacon(), 5, 12)
+    print("\n4. Adding Diehard (methuselah):")
+    game.add_pattern(GameOfLife.diehard(), 10, 15)
     
-    print("\n5. Adding LWSS pattern (spaceship):")
-    game.add_pattern(GameOfLife.lwss(), 20, 12)
+    print("\n5. Adding Acorn (methuselah):")
+    game.add_pattern(GameOfLife.acorn(), 25, 15)
     
     print("\nInitial state:")
     print(game)
@@ -793,24 +963,20 @@ def demo() -> None:
         print(f"\nGeneration {generation}:")
         print(game)
     
-    # Clear and try random initialization
-    print("\n" + "=" * 40)
-    print("Random initialization demo:")
-    game.clear()
-    game.randomize(density=0.2)
-    
-    print("\nRandom initial state (density: 0.2):")
-    print(game)
-    
-    print("\nRunning 5 generations of random pattern...")
-    for generation in range(1, 6):
-        game.next_generation()
-        print(f"\nGeneration {generation}:")
-        print(game)
+    # Demo alternative rulesets
+    print("\n" + "=" * 50)
+    print("Testing HighLife ruleset:")
+    game_hl = GameOfLife(20, 10, ruleset=Ruleset.HIGHLIFE)
+    game_hl.add_pattern(GameOfLife.glider(), 5, 3)
+    print("\nHighLife Glider:")
+    print(game_hl)
+    game_hl.next_generation()
+    print("\nAfter 1 generation:")
+    print(game_hl)
 
 
 def benchmark() -> None:
-    """Run performance benchmark comparing iterative vs vectorized methods."""
+    """Run performance benchmark."""
     print("Performance Benchmark")
     print("=" * 50)
     
@@ -818,31 +984,17 @@ def benchmark() -> None:
     iterations = 100
     
     for width, height in sizes:
-        game_iterative = GameOfLife(width, height)
-        game_iterative.randomize(0.3)
-        
-        game_vectorized = GameOfLife(width, height)
-        game_vectorized.grid = game_iterative.grid.copy()
-        
-        # Benchmark iterative method
-        start = time.time()
-        for _ in range(iterations):
-            game_iterative.next_generation()
-        iterative_time = time.time() - start
+        game = GameOfLife(width, height)
+        game.randomize(0.3)
         
         # Benchmark vectorized method
         start = time.time()
         for _ in range(iterations):
-            game_vectorized.next_generation_vectorized()
-        vectorized_time = time.time() - start
+            game.next_generation()
+        elapsed = time.time() - start
         
-        speedup = iterative_time / vectorized_time if vectorized_time > 0 else float('inf')
-        
-        print(f"Grid {width}x{height}:")
-        print(f"  Iterative: {iterative_time:.4f}s ({iterations} iterations)")
-        print(f"  Vectorized: {vectorized_time:.4f}s ({iterations} iterations)")
-        print(f"  Speedup: {speedup:.2f}x")
-        print()
+        print(f"Grid {width}x{height}: {elapsed:.4f}s ({iterations} iterations)")
+        print(f"  Avg: {elapsed/iterations*1000:.2f}ms per generation")
 
 
 if __name__ == "__main__":
